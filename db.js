@@ -1154,9 +1154,19 @@ async function adminSetBan(userId, isBanned, reason = '') {
   await execRun(
     `UPDATE users
         SET is_banned = ?, ban_reason = ?, session_version = session_version + 1, active_stream_id = NULL
-      WHERE id = ?`,
+      WHERE id = ? AND role != 'admin'`,
     [isBanned ? 1 : 0, isBanned ? String(reason || 'مخالفة شروط الاستخدام وتسريب المحتوى') : null, Number(userId)]
   );
+}
+
+async function adminDeleteUser(userId) {
+  const res = await execRun("DELETE FROM users WHERE id = ? AND role != 'admin'", [Number(userId)]);
+  return res.changes === 1;
+}
+
+async function adminDeleteCode(codeId) {
+  const res = await execRun('DELETE FROM activation_codes WHERE id = ? AND used_by_user_id IS NULL', [Number(codeId)]);
+  return res.changes === 1;
 }
 
 // ── Lazy Housekeeping (Allows Layerbase DB to Sleep on Idle) ───────
@@ -1213,5 +1223,7 @@ module.exports = {
   adminResetDeviceQuota,
   adminForceLogoutEverywhere,
   adminSetBan,
+  adminDeleteUser,
+  adminDeleteCode,
   pruneExpired,
 };

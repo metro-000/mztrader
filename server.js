@@ -932,6 +932,30 @@ app.post('/api/admin/users/:id/ban', requireSession({ allowStepUp: true, require
   res.json({ ok: true });
 });
 
+app.delete('/api/admin/users/:id', requireSession({ allowStepUp: true, requireAdmin: true }), async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'معرف المستخدم غير صالح.' });
+  }
+  const deleted = await db.adminDeleteUser(userId);
+  if (!deleted) {
+    return res.status(400).json({ error: 'لا يمكن حذف حساب المدير أو لم يتم العثور على الحساب.' });
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/codes/:id', requireSession({ allowStepUp: true, requireAdmin: true }), async (req, res) => {
+  const codeId = Number(req.params.id);
+  if (!Number.isInteger(codeId) || codeId <= 0) {
+    return res.status(400).json({ error: 'معرف الكود غير صالح.' });
+  }
+  const deleted = await db.adminDeleteCode(codeId);
+  if (!deleted) {
+    return res.status(400).json({ error: 'لا يمكن حذف كود مُستخدم مسبقاً أو غير موجود.' });
+  }
+  res.json({ ok: true });
+});
+
 // ── 11. Frontend Page & Health Routes ──────────────────────────────
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });

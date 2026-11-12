@@ -49,6 +49,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('kpi-available-codes').textContent = String(codes.filter((c) => !c.used_by_user_id).length);
   }
 
+  function createDeleteUserBtn(u, label = 'حذف') {
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-outline btn-sm';
+    delBtn.style.cssText = 'border-color:var(--crimson);color:var(--crimson);';
+    delBtn.textContent = label;
+    delBtn.addEventListener('click', async () => {
+      if (!window.confirm(`هل أنت متأكد من حذف حساب "${u.full_name}" (${u.email}) نهائياً؟ سيتم حذف أجهزته واشتراكاته وسجلاته.`)) return;
+      try {
+        await CourseSecurityClient.call(`/api/admin/users/${u.id}`, { method: 'DELETE' });
+        notify('تم حذف الحساب نهائياً.');
+        await loadAdminData();
+      } catch (err) {
+        notify(err.message, true);
+      }
+    });
+    return delBtn;
+  }
+
   // ── Tab 1: Users & Activation Codes ──────────────────────────────
   function renderUsersTable(users) {
     const tbody = document.getElementById('admin-users-tbody');
@@ -109,7 +127,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       wrap.appendChild(enrollBtn);
-      if (u.role !== 'admin') wrap.appendChild(banBtn);
+      if (u.role !== 'admin') {
+        wrap.appendChild(banBtn);
+        wrap.appendChild(createDeleteUserBtn(u));
+      }
       tdActions.appendChild(wrap);
 
       tr.appendChild(tdUser);
@@ -133,6 +154,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         <td>${c.used_by_user_id ? '<span class="badge badge-crimson">مُستخدم</span>' : '<span class="badge badge-emerald">متاح</span>'}</td>
         <td style="font-size:0.82rem;color:var(--text-muted);">${c.used_by_email ? escapeHtml(c.used_by_email) : '—'}</td>
       `;
+      const tdAction = document.createElement('td');
+      if (!c.used_by_user_id) {
+        const delCodeBtn = document.createElement('button');
+        delCodeBtn.className = 'btn btn-outline btn-sm';
+        delCodeBtn.style.cssText = 'border-color:var(--crimson);color:var(--crimson);';
+        delCodeBtn.textContent = 'حذف';
+        delCodeBtn.addEventListener('click', async () => {
+          if (!window.confirm(`حذف كود التفعيل "${c.code}"؟`)) return;
+          try {
+            await CourseSecurityClient.call(`/api/admin/codes/${c.id}`, { method: 'DELETE' });
+            notify('تم حذف كود التفعيل.');
+            await loadAdminData();
+          } catch (err) {
+            notify(err.message, true);
+          }
+        });
+        tdAction.appendChild(delCodeBtn);
+      } else {
+        tdAction.textContent = '—';
+      }
+      tr.appendChild(tdAction);
       tbody.appendChild(tr);
     });
   }
@@ -352,7 +394,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       actions.appendChild(clearBtn);
       actions.appendChild(quotaBtn);
       actions.appendChild(logoutAllBtn);
-      if (u.role !== 'admin') actions.appendChild(banBtn);
+      if (u.role !== 'admin') {
+        actions.appendChild(banBtn);
+        actions.appendChild(createDeleteUserBtn(u, '🗑️ حذف الحساب'));
+      }
       box.appendChild(actions);
       container.appendChild(box);
     });
