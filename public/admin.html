@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MZTRADER — مركز التحكم والإدارة الأمنية</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- Top Navbar -->
+  <header class="navbar">
+    <a href="/admin" class="brand">
+      <span class="brand-dot"></span>
+      <span>MZTRADER</span>
+    </a>
+
+    <div class="nav-actions">
+      <span class="badge badge-wm">🛡️ مركز الإدارة والأمان</span>
+      <a href="/portal" class="btn btn-outline btn-sm">🎬 معاينة بوابة المشتركين</a>
+      <button type="button" class="btn btn-outline btn-sm" id="refresh-admin-btn">🔄 تحديث البيانات</button>
+      <button type="button" class="btn btn-outline btn-sm" data-theme-toggle>☀️ الوضع النهاري</button>
+      <button type="button" class="btn btn-outline btn-sm" id="admin-logout-btn">تسجيل الخروج</button>
+    </div>
+  </header>
+
+  <main class="portal-container">
+    <div id="admin-alert" class="alert alert-success" hidden></div>
+
+    <!-- Summary KPI Cards -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+      <div class="card">
+        <div style="font-size: 0.85rem; color: var(--text-muted);">إجمالي الحسابات</div>
+        <div id="kpi-total-users" style="font-size: 1.8rem; font-weight: 800;">0</div>
+      </div>
+      <div class="card">
+        <div style="font-size: 0.85rem; color: var(--text-muted);">المشتركون المفعلون</div>
+        <div id="kpi-enrolled-users" style="font-size: 1.8rem; font-weight: 800; color: var(--emerald);">0</div>
+      </div>
+      <div class="card">
+        <div style="font-size: 0.85rem; color: var(--text-muted);">حسابات قيد المراجعة الأمنية</div>
+        <div id="kpi-review-users" style="font-size: 1.8rem; font-weight: 800; color: var(--crimson);">0</div>
+      </div>
+      <div class="card">
+        <div style="font-size: 0.85rem; color: var(--text-muted);">أكواد التفعيل المتاحة</div>
+        <div id="kpi-available-codes" style="font-size: 1.8rem; font-weight: 800; color: var(--amber);">0</div>
+      </div>
+    </div>
+
+    <!-- 5 Organized Admin Tabs -->
+    <div class="tabs" style="flex-wrap: wrap;">
+      <button type="button" class="tab-btn active" data-admin-tab="tab-students">1. المشتركون وأكواد التفعيل</button>
+      <button type="button" class="tab-btn" data-admin-tab="tab-courses">2. إدارة الكورسات والدروس</button>
+      <button type="button" class="tab-btn" data-admin-tab="tab-leak">3. أداة كشف المسربين (Watermark)</button>
+      <button type="button" class="tab-btn" data-admin-tab="tab-security">4. قائمة المراجعة الأمنية</button>
+      <button type="button" class="tab-btn" data-admin-tab="tab-otp">5. سجل أكواد التحقق المباشر</button>
+    </div>
+
+    <!-- TAB 1: Students & Activation Codes -->
+    <section id="tab-students" class="admin-tab-panel">
+      <div style="display: grid; grid-template-columns: 1.45fr 0.85fr; gap: 1.25rem; align-items: start;">
+        <div class="card">
+          <h2 style="font-size: 1.15rem; margin-bottom: 0.9rem;">👥 قائمة المشتركين وتفعيل الحسابات</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>الاسم والبريد</th>
+                  <th>الكود المائي</th>
+                  <th>الأجهزة</th>
+                  <th>نقاط المخاطر (7 أيام)</th>
+                  <th>الاشتراك</th>
+                  <th>إجراءات</th>
+                </tr>
+              </thead>
+              <tbody id="admin-users-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.9rem;">
+            <h2 style="font-size: 1.15rem;">🎟️ أكواد التفعيل المسبقة</h2>
+            <button type="button" class="btn btn-primary btn-sm" id="generate-codes-btn">+ توليد 5 أكواد جديدة</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>الكود</th>
+                  <th>الحالة</th>
+                  <th>المستخدم</th>
+                </tr>
+              </thead>
+              <tbody id="admin-codes-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: Courses & Video Manager -->
+    <section id="tab-courses" class="admin-tab-panel" hidden>
+      <div style="display: grid; grid-template-columns: 1fr 1.2fr; gap: 1.25rem; align-items: start;">
+        <div class="card">
+          <h2 style="font-size: 1.15rem; margin-bottom: 0.85rem;">➕ إضافة وحدة تدريبية جديدة</h2>
+          <form id="add-module-form" style="display: flex; gap: 0.6rem; margin-bottom: 1.5rem;">
+            <input type="text" id="new-module-title" class="input" placeholder="عنوان الوحدة التدريبية..." required>
+            <button type="submit" class="btn btn-outline">إضافة وحدة</button>
+          </form>
+
+          <h2 style="font-size: 1.15rem; margin-bottom: 0.85rem;">🎬 إضافة / تعديل درس فيديو (بث خارجي HLS + مفتاح AES-128)</h2>
+          <form id="save-video-form">
+            <div class="form-group">
+              <label for="vid-module">الوحدة التدريبية</label>
+              <select id="vid-module" class="input" required></select>
+            </div>
+            <div class="form-group">
+              <label for="vid-id">معرف الدرس (اختياري للتعديل، مثال: lesson-01)</label>
+              <input type="text" id="vid-id" class="input" placeholder="اتركه فارغاً لإنشاء درس جديد">
+            </div>
+            <div class="form-group">
+              <label for="vid-title">عنوان الدرس</label>
+              <input type="text" id="vid-title" class="input" placeholder="مثال: استراتيجية اقتناص السيولة" required>
+            </div>
+            <div class="form-group">
+              <label for="vid-duration">المدة الزمنية</label>
+              <input type="text" id="vid-duration" class="input" placeholder="18:30" value="18:30">
+            </div>
+            <div class="form-group">
+              <label for="vid-url">رابط البث الخارجي (.m3u8 على Cloudflare R2 / CDN)</label>
+              <input type="url" id="vid-url" class="input" value="https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8" required>
+            </div>
+            <div class="form-group">
+              <label for="vid-key">مفتاح التشفير AES-128 (32 حرف Hex = 16 بايت، يُولد تلقائياً إن تُرك فارغاً)</label>
+              <input type="text" id="vid-key" class="input" placeholder="يُولد تلقائياً بمفتاح عشوائي آمن 16-Byte">
+            </div>
+            <div class="form-group">
+              <label for="vid-desc">وصف الدرس وملاحظات المتداول</label>
+              <textarea id="vid-desc" class="input" rows="3" placeholder="شرح تفصيلي لمحتوى الدرس..."></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%;">حفظ الدرس وتشفير البث</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2 style="font-size: 1.15rem; margin-bottom: 0.9rem;">📚 الدروس الحالية ومفاتيح AES-128</h2>
+          <div id="admin-lessons-list" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: Watermark Leak Lookup -->
+    <section id="tab-leak" class="admin-tab-panel" hidden>
+      <div class="card" style="max-width: 820px; margin: 0 auto;">
+        <h2 style="font-size: 1.25rem; margin-bottom: 0.4rem;">🔍 أداة كشف المسربين عبر العلامة المائية (Watermark Leak Lookup)</h2>
+        <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+          أدخل الكود المائي الظاهر في الفيديو المسرب (مثال: <span class="code-pill">MZT-9912-Z</span> أو <span class="code-pill">MZT-4091-A</span>) لكشف بيانات صاحب الحساب وأجهزته وسجل الـ IP وحظره فوراً.
+        </p>
+
+        <form id="leak-search-form" style="display: flex; gap: 0.65rem; margin-bottom: 1.25rem;">
+          <input type="text" id="leak-code-input" class="input" placeholder="أدخل الكود المائي مثل: MZT-9912-Z" value="MZT-9912-Z" required>
+          <button type="submit" class="btn btn-primary">بحث وكشف المسرب</button>
+        </form>
+
+        <div id="leak-result-box"></div>
+      </div>
+    </section>
+
+    <!-- TAB 4: Security Review Queue & Risk Engine -->
+    <section id="tab-security" class="admin-tab-panel" hidden>
+      <div class="card">
+        <h2 style="font-size: 1.2rem; margin-bottom: 0.4rem;">🛡️ قائمة المراجعة الأمنية ومحرك المخاطر (7-Day Risk Engine)</h2>
+        <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+          النظام لا يقوم بالحظر التلقائي أبداً؛ الحسابات التي تتجاوز 50 نقطة تطلب تحققاً إضافياً (Step-Up)، والتي تتجاوز 100 نقطة تظهر هنا للمراجعة اليدوية.
+        </p>
+        <div id="security-queue-list" style="display: flex; flex-direction: column; gap: 1rem;"></div>
+      </div>
+    </section>
+
+    <!-- TAB 5: Live OTP & Email Log -->
+    <section id="tab-otp" class="admin-tab-panel" hidden>
+      <div class="card">
+        <h2 style="font-size: 1.2rem; margin-bottom: 0.4rem;">📨 سجل أكواد التحقق المباشر (Live OTP & Resend Log)</h2>
+        <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+          يعرض أكواد التحقق المكونة من 6 أرقام لتسهيل دعم المشتركين عبر واتساب أو الاختبار المجاني الفوري بدون الحاجة لخادم بريد مدفوع.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>المشترك</th>
+                <th>الغرض</th>
+                <th>كود التحقق (6 أرقام)</th>
+                <th>المحاولات</th>
+                <th>الحالة</th>
+                <th>تاريخ الإنشاء</th>
+              </tr>
+            </thead>
+            <tbody id="admin-otp-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/js/security-client.js" defer></script>
+  <script src="/js/admin.js" defer></script>
+</body>
+</html>

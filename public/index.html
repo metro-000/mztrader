@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MZTRADER</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body style="display: flex; flex-direction: column; min-height: 100vh; justify-content: center; align-items: center; padding: 1.5rem;">
+
+  <!-- Minimal Centered Brand + Theme Toggle -->
+  <div style="width: 100%; max-width: 440px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+    <a href="/" class="brand">
+      <span class="brand-dot"></span>
+      <span>MZTRADER</span>
+    </a>
+    <button type="button" class="btn btn-outline btn-sm" data-theme-toggle>☀️ الوضع النهاري</button>
+  </div>
+
+  <!-- Centered Login / Sign-Up Card Only -->
+  <main class="card" style="width: 100%; max-width: 440px;">
+    <div class="tabs">
+      <button type="button" class="tab-btn active" id="tab-login">تسجيل الدخول</button>
+      <button type="button" class="tab-btn" id="tab-register">إنشاء حساب جديد</button>
+    </div>
+
+    <div id="auth-alert" class="alert alert-error" hidden></div>
+
+    <!-- Login Form -->
+    <form id="login-form">
+      <div class="form-group">
+        <label for="login-email">البريد الإلكتروني</label>
+        <input type="email" id="login-email" class="input" placeholder="name@example.com" required>
+      </div>
+      <div class="form-group">
+        <label for="login-password">كلمة المرور</label>
+        <input type="password" id="login-password" class="input" placeholder="••••••••" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 0.4rem;" id="login-submit">
+        دخول إلى المنصة
+      </button>
+    </form>
+
+    <!-- Register Form -->
+    <form id="register-form" hidden>
+      <div class="form-group">
+        <label for="reg-name">الاسم الكامل</label>
+        <input type="text" id="reg-name" class="input" placeholder="محمد العلي" required>
+      </div>
+      <div class="form-group">
+        <label for="reg-email">البريد الإلكتروني</label>
+        <input type="email" id="reg-email" class="input" placeholder="you@example.com" required>
+      </div>
+      <div class="form-group">
+        <label for="reg-phone">رقم الهاتف أو معرف تيليجرام</label>
+        <input type="text" id="reg-phone" class="input" placeholder="@username أو +9665...">
+      </div>
+      <div class="form-group">
+        <label for="reg-password">كلمة المرور (6 أحرف على الأقل)</label>
+        <input type="password" id="reg-password" class="input" placeholder="••••••••" required>
+      </div>
+      <div class="form-group">
+        <label for="reg-code">كود التفعيل المسبق (اختياري)</label>
+        <input type="text" id="reg-code" class="input" placeholder="مثال: MZT-VIP-XXXXXX">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 0.4rem;" id="reg-submit">
+        إنشاء حساب وربط الجهاز
+      </button>
+    </form>
+
+    <div style="margin-top: 1.2rem; padding-top: 0.9rem; border-top: 1px solid var(--border); font-size: 0.83rem; color: var(--text-muted);">
+      🔒 يسمح النظام بتسجيل <strong>جهازين كحد أقصى</strong> لكل حساب، مع إمكانية تشغيل بث فيديو واحد في نفس اللحظة.
+    </div>
+  </main>
+
+  <!-- 2-Step New Device Verification Modal -->
+  <div class="modal-backdrop" id="device-modal" hidden>
+    <div class="modal-card">
+      <h2 style="font-size: 1.25rem; margin-bottom: 0.4rem;">🔐 تأكيد إضافة جهاز جديد</h2>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+        تم رصد تسجيل دخول من جهاز جديد. يرجى إدخال الكود المكون من 6 أرقام المرسل إلى بريدك الإلكتروني.
+      </p>
+
+      <div id="dev-otp-banner" class="alert alert-warning" hidden></div>
+      <div id="device-modal-error" class="alert alert-error" hidden></div>
+
+      <form id="device-verify-form">
+        <div id="replace-device-section" style="margin-bottom: 1rem;" hidden>
+          <div class="alert alert-warning" style="font-size: 0.86rem;">
+            وصلت للحد الأقصى للأجهزة المسجلة (2/2). اختر جهازاً واحداً لاستبداله بهذا الجهاز
+            (متبقي لك <strong id="changes-left-count">2</strong> استبدال هذا الشهر):
+          </div>
+          <div id="replace-device-list" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="device-otp-input">كود التحقق (6 أرقام)</label>
+          <input type="text" id="device-otp-input" class="input" placeholder="123456" maxlength="6" pattern="\d{6}" required style="text-align: center; font-size: 1.35rem; letter-spacing: 6px; font-weight: 800;">
+        </div>
+
+        <div style="display: flex; gap: 0.65rem;">
+          <button type="submit" class="btn btn-primary" style="flex: 1;">تأكيد وتفعيل الجهاز</button>
+          <button type="button" class="btn btn-outline" id="close-device-modal">إلغاء</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/security-client.js" defer></script>
+  <script src="/js/auth.js" defer></script>
+</body>
+</html>
