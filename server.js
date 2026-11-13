@@ -242,6 +242,10 @@ function requireSession({ allowStepUp = false, requireAdmin = false } = {}) {
 }
 
 // ── 6. Auth, Registration & Device Routes ──────────────────────────
+const ALLOW_DEV_OTP_HINT = !IS_PROD || process.env.ALLOW_DEV_OTP_HINT === 'true';
+const canSendOtpInCurrentEnv = () => mailer.isConfigured() || ALLOW_DEV_OTP_HINT;
+const getDevOtpHint = (code) => (!mailer.isConfigured() && ALLOW_DEV_OTP_HINT ? code : undefined);
+
 app.post('/api/register', ipLimiter, emailLimiter, async (req, res) => {
   const { fullName, email, phone, password, activationCode, deviceLabel } = req.body ?? {};
   if (!fullName || !email || !password || String(password).length < 6) {
@@ -315,9 +319,9 @@ app.post('/api/login', ipLimiter, emailLimiter, async (req, res) => {
 
   const label = String(deviceLabel ?? 'متصفح الويب').slice(0, 100);
   const devices = await db.listDevices(user.id);
+  const isAdmin = user.role === 'admin';
 
-  // First-ever device on a freshly seeded demo/admin account -> auto-bind first slot for smooth onboarding,
-  // OR if user already has >=1 device (or wants OTP), require 6-digit verification code.
+  // First-ever device on a freshly seeded demo/admin account -> auto-bind first slot for smooth onboarding.
   if (devices.length === 0) {
     await db.registerDeviceAtomic({
       userId: user.id,
@@ -328,17 +332,57 @@ app.post('/api/login', ipLimiter, emailLimiter, async (req, res) => {
       replaceDeviceId: null,
       maxDevices: POLICY.MAX_DEVICES,
       maxChangesPer30d: POLICY.MAX_DEVICE_CHANGES_PER_30D,
+      bypassQuota: isAdmin,
     });
-    await risk.record(user.id, 'device_registered', req.ip, { label, firstDevice: true });
+    if (isAdmin) {
+      await db.insertEvent(user.id, 'device_registered', 0, req.ip, { label, firstDevice: true });
+    } else {
+      await risk.record(user.id, 'device_registered', req.ip, { label, firstDevice: true });
+    }
     issueSession(res, user, dpop.jkt);
     return res.json({ ok: true, role: user.role });
   }
 
-  // New unrecognized device -> require 6-digit email verification code
-  const code = await db.createEmailCode(user.id, 'new_device', dpop.jkt);
-  await mailer.sendDeviceCode(user.email, code, { deviceLabel: label, ip: req.ip });
+  const atLimit = devices.length >= POLICY.MAX_DEVICES;
+  const canReplace = isAdmin || Boolean(user.approved_device_replace);
 
-  const changesUsed = await db.countRecentDeviceChanges(user.id);
+  // Regular users at the 2-device cap cannot replace a device without prior Admin permission.
+  if (!isAdmin && atLimit && !canReplace) {
+    const approvalToken = jwt.sign(
+      { typ: 'device_request', uid: user.id, jkt: dpop.jkt, label },
+      JWT_SECRET,
+      { algorithm: 'HS256', expiresIn: POLICY.PENDING_TTL_S }
+    );
+    const hasPendingRequest = await db.hasPendingDeviceChangeRequest(user.id);
+
+    return res.status(202).json({
+      code: 'ADMIN_APPROVAL_REQUIRED',
+      approvalToken,
+      atLimit: true,
+      canReplace: false,
+      hasPendingRequest,
+      devices: devices.map((d) => ({ id: d.id, label: d.device_label, lastSeenAt: d.last_seen_at })),
+    });
+  }
+
+  if (!canSendOtpInCurrentEnv()) {
+    return res.status(503).json({
+      error: 'خدمة إرسال أكواد التحقق عبر البريد الإلكتروني غير مُفعلة على الخادم بعد. يرجى إضافة مفتاح Resend أو Brevo في إعدادات البيئة.',
+      code: 'MAILER_NOT_CONFIGURED',
+    });
+  }
+
+  // New unrecognized device -> send 6-digit email verification code
+  const code = await db.createEmailCode(user.id, 'new_device', dpop.jkt);
+  try {
+    await mailer.sendDeviceCode(user.email, code, { deviceLabel: label, ip: req.ip });
+  } catch (err) {
+    return res.status(502).json({
+      error: err.message || 'تعذر إرسال كود التحقق إلى بريدك الإلكتروني حالياً.',
+      code: err.code || 'MAILER_DELIVERY_FAILED',
+    });
+  }
+
   const pendingToken = jwt.sign(
     { typ: 'device_verify', uid: user.id, jkt: dpop.jkt, label },
     JWT_SECRET,
@@ -348,10 +392,12 @@ app.post('/api/login', ipLimiter, emailLimiter, async (req, res) => {
   return res.status(202).json({
     code: 'DEVICE_VERIFICATION_REQUIRED',
     pendingToken,
-    atLimit: devices.length >= POLICY.MAX_DEVICES,
+    atLimit,
+    canReplace,
+    isAdmin,
+    adminApproved: !isAdmin && atLimit && Boolean(user.approved_device_replace),
     devices: devices.map((d) => ({ id: d.id, label: d.device_label, lastSeenAt: d.last_seen_at })),
-    changesLeft: Math.max(0, POLICY.MAX_DEVICE_CHANGES_PER_30D - changesUsed),
-    devCodeHint: !process.env.RESEND_API_KEY ? code : undefined,
+    devCodeHint: getDevOtpHint(code),
   });
 });
 
@@ -369,44 +415,87 @@ app.post('/api/devices/verify', ipLimiter, async (req, res) => {
     return res.status(403).json({ error: 'الحساب غير متاح حالياً.' });
   }
 
-  if (!(await db.verifyEmailCode(user.id, 'new_device', dpop.jkt, String(code ?? '')))) {
-    return res.status(401).json({ error: 'كود التحقق غير صحيح أو منتهي الصلاحية.', code: 'CODE_INVALID' });
-  }
-
-  const result = await db.registerDeviceAtomic({
+  const result = await db.verifyCodeAndRegisterDevice({
     userId: user.id,
+    purpose: 'new_device',
     jkt: dpop.jkt,
+    code: String(code ?? ''),
     publicKeyJwk: dpop.publicKeyJwk,
     label: pending.label,
     ip: req.ip,
     replaceDeviceId: replaceDeviceId ? Number(replaceDeviceId) : null,
     maxDevices: POLICY.MAX_DEVICES,
-    maxChangesPer30d: POLICY.MAX_DEVICE_CHANGES_PER_30D,
   });
 
+  if (result.status === 'code_invalid') {
+    return res.status(401).json({ error: 'كود التحقق غير صحيح أو منتهي الصلاحية.', code: 'CODE_INVALID' });
+  }
+  if (result.status === 'approval_required') {
+    return res.status(403).json({
+      error: 'وصلت للحد الأقصى للأجهزة (2/2). استبدال الجهاز يتطلب موافقة الإدارة أولاً.',
+      code: 'ADMIN_APPROVAL_REQUIRED',
+    });
+  }
   if (result.status === 'limit') {
     return res.status(409).json({
-      error: 'وصلت للحد الأقصى للأجهزة (جهازين). يرجى اختيار جهاز لاستبداله.',
+      error: 'وصلت للحد الأقصى للأجهزة (جهازين). يرجى اختيار جهاز مسجل لاستبداله.',
       code: 'DEVICE_LIMIT_REACHED',
     });
   }
-  if (result.status === 'quota') {
-    return res.status(429).json({
-      error: 'لقد استنفدت الحد الأقصى لاستبدال الأجهزة هذا الشهر (مرتين كل 30 يوماً). تواصل مع الإدارة.',
-      code: 'DEVICE_CHANGE_QUOTA',
+
+  if (user.role === 'admin') {
+    await db.insertEvent(user.id, result.replaced ? 'device_replaced' : 'device_registered', 0, req.ip, {
+      label: pending.label,
+      adminBypass: true,
     });
+  } else {
+    await risk.record(user.id, result.replaced ? 'device_replaced' : 'device_registered', req.ip, { label: pending.label });
   }
 
-  await risk.record(user.id, result.replaced ? 'device_replaced' : 'device_registered', req.ip, { label: pending.label });
-  await mailer.sendNewDeviceAlert(user.email, { deviceLabel: pending.label, ip: req.ip, replaced: result.replaced });
+  mailer.sendNewDeviceAlert(user.email, { deviceLabel: pending.label, ip: req.ip, replaced: result.replaced })
+    .catch((err) => console.error('New device alert email failed:', err.message));
 
   issueSession(res, user, dpop.jkt);
   return res.json({ ok: true, role: user.role });
 });
 
+app.post('/api/devices/request-change', ipLimiter, async (req, res) => {
+  const { approvalToken, reason } = req.body ?? {};
+  const dpop = await verifyDpop(req);
+  if (!dpop) return rejectProof(res);
+
+  const reqJwt = verifyJwt(String(approvalToken ?? ''), 'device_request');
+  if (!reqJwt || reqJwt.jkt !== dpop.jkt) {
+    return res.status(401).json({ error: 'انتهت صلاحية الجلسة. يرجى إعادة محاولة تسجيل الدخول لإرسال الطلب.' });
+  }
+  const user = await db.findUserById(reqJwt.uid);
+  if (!user || user.is_banned) {
+    return res.status(403).json({ error: 'الحساب غير متاح حالياً.' });
+  }
+  if (user.role === 'admin') {
+    return res.status(400).json({ error: 'حساب المدير لا يحتاج لموافقة إدارية لاستبدال الأجهزة.' });
+  }
+
+  const created = await db.createDeviceChangeRequest({
+    userId: user.id,
+    deviceLabel: reqJwt.label,
+    jkt: dpop.jkt,
+    ip: req.ip,
+    reason,
+  });
+  await db.insertEvent(user.id, 'device_change_requested', 0, req.ip, { label: reqJwt.label, via: 'login' });
+
+  return res.status(created.alreadyPending ? 200 : 201).json({
+    ok: true,
+    alreadyPending: created.alreadyPending,
+    requestId: created.id,
+  });
+});
+
 app.get('/api/devices', requireSession({ allowStepUp: true }), async (req, res) => {
   const devices = await db.listDevices(req.user.id);
-  const changesUsed = await db.countRecentDeviceChanges(req.user.id);
+  const isAdmin = req.user.role === 'admin';
+  const hasPendingRequest = isAdmin ? false : await db.hasPendingDeviceChangeRequest(req.user.id);
   res.json({
     devices: devices.map((d) => ({
       id: d.id,
@@ -416,22 +505,28 @@ app.get('/api/devices', requireSession({ allowStepUp: true }), async (req, res) 
       current: d.id === req.device.id,
     })),
     maxDevices: POLICY.MAX_DEVICES,
-    changesLeft: Math.max(0, POLICY.MAX_DEVICE_CHANGES_PER_30D - changesUsed),
+    isAdmin,
+    canRemoveDevices: isAdmin,
+    approvedDeviceReplace: Boolean(req.user.approved_device_replace),
+    hasPendingRequest,
   });
 });
 
 app.delete('/api/devices/:id', requireSession({ allowStepUp: true }), async (req, res) => {
-  const deviceId = Number(req.params.id);
-  const result = await db.removeDeviceWithQuota(req.user.id, deviceId, POLICY.MAX_DEVICE_CHANGES_PER_30D);
-  if (result === 'not_found') return res.status(404).json({ error: 'الجهاز غير موجود.' });
-  if (result === 'quota') {
-    return res.status(429).json({
-      error: 'لقد استنفدت الحد الأقصى لحذف أو استبدال الأجهزة هذا الشهر (مرتين كل 30 يوماً).',
-      code: 'DEVICE_CHANGE_QUOTA',
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
+      error: 'حذف أو تغيير الأجهزة للمشتركين يتم حصراً بموافقة الإدارة. يرجى إرسال طلب تغيير جهاز.',
+      code: 'ADMIN_APPROVAL_REQUIRED',
     });
   }
 
-  await risk.record(req.user.id, 'device_removed', req.ip);
+  const deviceId = Number(req.params.id);
+  const result = await db.removeDeviceWithQuota(req.user.id, deviceId, POLICY.MAX_DEVICE_CHANGES_PER_30D, {
+    bypassQuota: true,
+  });
+  if (result === 'not_found') return res.status(404).json({ error: 'الجهاز غير موجود.' });
+
+  await db.insertEvent(req.user.id, 'device_removed', 0, req.ip, { deviceId, adminBypass: true });
   if (deviceId === req.device.id) res.clearCookie(SESSION_COOKIE, COOKIE_OPTS);
   res.status(204).end();
 });
@@ -444,11 +539,25 @@ app.post('/api/logout', requireSession({ allowStepUp: true }), async (req, res) 
 
 // ── 7. Step-Up Verification (Replaces Auto-Bans) ───────────────────
 app.post('/api/step-up/start', ipLimiter, requireSession({ allowStepUp: true }), async (req, res) => {
+  if (!canSendOtpInCurrentEnv()) {
+    return res.status(503).json({
+      error: 'خدمة إرسال أكواد التحقق عبر البريد الإلكتروني غير مُفعلة على الخادم بعد.',
+      code: 'MAILER_NOT_CONFIGURED',
+    });
+  }
+
   const code = await db.createEmailCode(req.user.id, 'step_up', req.device.jwk_thumbprint);
-  await mailer.sendStepUpCode(req.user.email, code);
+  try {
+    await mailer.sendStepUpCode(req.user.email, code);
+  } catch (err) {
+    return res.status(502).json({
+      error: err.message || 'تعذر إرسال كود التحقق إلى بريدك الإلكتروني حالياً.',
+      code: err.code || 'MAILER_DELIVERY_FAILED',
+    });
+  }
   res.status(202).json({
     ok: true,
-    devCodeHint: !process.env.RESEND_API_KEY ? code : undefined,
+    devCodeHint: getDevOtpHint(code),
   });
 });
 
@@ -490,6 +599,28 @@ app.get('/api/portal/overview', requireSession({ allowStepUp: true }), async (re
     })),
     changesLeft: Math.max(0, POLICY.MAX_DEVICE_CHANGES_PER_30D - changesUsed),
     course,
+  });
+});
+
+app.post('/api/portal/request-device-change', requireSession({ allowStepUp: true }), async (req, res) => {
+  if (req.user.role === 'admin') {
+    return res.status(400).json({ error: 'حساب المدير يمكنه إدارة أجهزته واستبدالها بحرية بدون طلب إذن.' });
+  }
+  const created = await db.createDeviceChangeRequest({
+    userId: req.user.id,
+    deviceLabel: req.device.device_label,
+    jkt: req.device.jwk_thumbprint,
+    ip: req.ip,
+    reason: req.body?.reason,
+  });
+  await db.insertEvent(req.user.id, 'device_change_requested', 0, req.ip, {
+    via: 'portal',
+    currentDevice: req.device.device_label,
+  });
+  return res.status(created.alreadyPending ? 200 : 201).json({
+    ok: true,
+    alreadyPending: created.alreadyPending,
+    requestId: created.id,
   });
 });
 
@@ -920,6 +1051,66 @@ app.post('/api/admin/users/:id/clear-risk', requireSession({ allowStepUp: true, 
 app.post('/api/admin/users/:id/reset-quota', requireSession({ allowStepUp: true, requireAdmin: true }), async (req, res) => {
   await db.adminResetDeviceQuota(Number(req.params.id));
   res.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/approve-device-change', requireSession({ allowStepUp: true, requireAdmin: true }), async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'معرف المستخدم غير صالح.' });
+  }
+  const approved = Boolean(req.body?.approved ?? true);
+  await db.adminSetDeviceReplaceApproval(userId, approved);
+  await db.insertEvent(userId, approved ? 'device_change_approved' : 'device_change_rejected', 0, req.ip, { via: 'admin_direct' });
+  res.json({ ok: true, approved });
+});
+
+app.delete('/api/admin/users/:id/devices/:deviceId', requireSession({ allowStepUp: true, requireAdmin: true }), async (req, res) => {
+  const userId = Number(req.params.id);
+  const deviceId = Number(req.params.deviceId);
+  if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(deviceId) || deviceId <= 0) {
+    return res.status(400).json({ error: 'معرف المستخدم أو الجهاز غير صالح.' });
+  }
+  const removed = await db.adminRemoveUserDevice(userId, deviceId);
+  if (!removed) {
+    return res.status(404).json({ error: 'الجهاز غير موجود لهذا المشترك.' });
+  }
+  await db.insertEvent(userId, 'admin_removed_device', 0, req.ip, { deviceId });
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/device-requests/:id/resolve', requireSession({ allowStepUp: true, requireAdmin: true }), async (req, res) => {
+  const requestId = Number(req.params.id);
+  const action = String(req.body?.action ?? '');
+  if (!Number.isInteger(requestId) || requestId <= 0 || (action !== 'approve' && action !== 'reject')) {
+    return res.status(400).json({ error: 'بيانات الطلب غير صالحة.' });
+  }
+
+  const removeDeviceId = req.body?.removeDeviceId ? Number(req.body.removeDeviceId) : null;
+  const result = await db.adminResolveDeviceChangeRequest(requestId, {
+    action,
+    adminNote: req.body?.adminNote,
+    removeDeviceId,
+  });
+  if (!result) {
+    return res.status(404).json({ error: 'طلب تغيير الجهاز غير موجود.' });
+  }
+
+  await db.insertEvent(
+    result.userId,
+    result.approved ? 'device_change_approved' : 'device_change_rejected',
+    0,
+    req.ip,
+    { requestId, removedDevice: result.removedDevice }
+  );
+
+  if (result.email) {
+    mailer.sendDeviceChangeDecision(result.email, {
+      approved: result.approved,
+      note: result.note,
+    }).catch((err) => console.error('Device decision email failed:', err.message));
+  }
+
+  res.json({ ok: true, ...result });
 });
 
 app.post('/api/admin/users/:id/logout-all', requireSession({ allowStepUp: true, requireAdmin: true }), async (req, res) => {

@@ -76,19 +76,40 @@
   <!-- 2-Step New Device Verification Modal -->
   <div class="modal-backdrop" id="device-modal" hidden>
     <div class="modal-card">
-      <h2 style="font-size: 1.25rem; margin-bottom: 0.4rem;">🔐 تأكيد إضافة جهاز جديد</h2>
-      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+      <h2 id="device-modal-title" style="font-size: 1.25rem; margin-bottom: 0.4rem;">🔐 تأكيد إضافة جهاز جديد</h2>
+      <p id="device-modal-subtitle" style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
         تم رصد تسجيل دخول من جهاز جديد. يرجى إدخال الكود المكون من 6 أرقام المرسل إلى بريدك الإلكتروني.
       </p>
 
       <div id="dev-otp-banner" class="alert alert-warning" hidden></div>
       <div id="device-modal-error" class="alert alert-error" hidden></div>
+      <div id="device-modal-success" class="alert alert-success" hidden></div>
+
+      <!-- Student 2/2 Device Limit -> Admin Approval Request Flow -->
+      <div id="admin-approval-section" hidden>
+        <div class="alert alert-warning" style="font-size: 0.88rem; margin-bottom: 0.85rem;">
+          وصلت للحد الأقصى للأجهزة المسجلة (2/2). لا يُسمح بتبديل الأجهزة ذاتياً للمشتركين؛ يرجى إرسال طلب للإدارة للموافقة على تغيير الجهاز.
+        </div>
+        <div id="approval-device-list" style="display: flex; flex-direction: column; gap: 0.45rem; margin-bottom: 0.9rem;"></div>
+        <div id="approval-pending-notice" class="alert alert-warning" style="font-size: 0.86rem;" hidden>
+          ⏳ لديك طلب قيد المراجعة لدى الإدارة بالفعل. بمجرد موافقة الإدارة، أعد تسجيل الدخول لإدخال كود التحقق واستبدال الجهاز.
+        </div>
+        <form id="device-request-form">
+          <div class="form-group">
+            <label for="device-change-reason">سبب طلب تغيير الجهاز (اختياري)</label>
+            <input type="text" id="device-change-reason" class="input" maxlength="300" placeholder="مثال: اشتريت هاتفاً جديداً أو قمت بإعادة ضبط الجهاز">
+          </div>
+          <div style="display: flex; gap: 0.65rem;">
+            <button type="submit" id="request-approval-submit" class="btn btn-primary" style="flex: 1;">📩 إرسال طلب موافقة للإدارة</button>
+            <button type="button" class="btn btn-outline" id="close-approval-modal">إغلاق</button>
+          </div>
+        </form>
+      </div>
 
       <form id="device-verify-form">
         <div id="replace-device-section" style="margin-bottom: 1rem;" hidden>
-          <div class="alert alert-warning" style="font-size: 0.86rem;">
-            وصلت للحد الأقصى للأجهزة المسجلة (2/2). اختر جهازاً واحداً لاستبداله بهذا الجهاز
-            (متبقي لك <strong id="changes-left-count">2</strong> استبدال هذا الشهر):
+          <div id="replace-device-notice" class="alert alert-warning" style="font-size: 0.86rem;">
+            اختر جهازاً واحداً لاستبداله بهذا الجهاز:
           </div>
           <div id="replace-device-list" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
         </div>

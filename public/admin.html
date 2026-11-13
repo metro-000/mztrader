@@ -51,8 +51,15 @@
       <button type="button" class="tab-btn active" data-admin-tab="tab-students">1. المشتركون وأكواد التفعيل</button>
       <button type="button" class="tab-btn" data-admin-tab="tab-courses">2. إدارة الكورسات والدروس</button>
       <button type="button" class="tab-btn" data-admin-tab="tab-leak">3. أداة كشف المسربين (Watermark)</button>
-      <button type="button" class="tab-btn" data-admin-tab="tab-security">4. قائمة المراجعة الأمنية</button>
+      <button type="button" class="tab-btn" data-admin-tab="tab-security">4. طلبات الأجهزة والأمان <span id="pending-req-tab-badge" class="badge badge-crimson" hidden style="margin-right:0.3rem;">0</span></button>
       <button type="button" class="tab-btn" data-admin-tab="tab-otp">5. سجل أكواد التحقق المباشر</button>
+    </div>
+
+    <div id="pending-req-banner" class="alert alert-warning" hidden style="margin-bottom:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+        <span id="pending-req-banner-text"></span>
+        <button type="button" class="btn btn-primary btn-sm" id="jump-to-device-requests-btn">مراجعة الطلبات</button>
+      </div>
     </div>
 
     <!-- TAB 1: Students & Activation Codes -->
@@ -167,8 +174,16 @@
       </div>
     </section>
 
-    <!-- TAB 4: Security Review Queue & Risk Engine -->
+    <!-- TAB 4: Device Change Requests & Security Review Queue -->
     <section id="tab-security" class="admin-tab-panel" hidden>
+      <div class="card" style="margin-bottom: 1.25rem;">
+        <h2 style="font-size: 1.2rem; margin-bottom: 0.4rem;">💻 طلبات تغيير واستبدال الأجهزة من المشتركين</h2>
+        <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+          عندما يصل المشترك للحد الأقصى (2/2) لا يمكنه استبدال جهازه إلا بموافقتك هنا (بمنح إذن استبدال لمرة واحدة مع OTP أو بإزالة جهاز قديم مباشرة).
+        </p>
+        <div id="device-requests-list" style="display: flex; flex-direction: column; gap: 0.9rem;"></div>
+      </div>
+
       <div class="card">
         <h2 style="font-size: 1.2rem; margin-bottom: 0.4rem;">🛡️ قائمة المراجعة الأمنية ومحرك المخاطر (7-Day Risk Engine)</h2>
         <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
@@ -203,6 +218,19 @@
       </div>
     </section>
   </main>
+
+  <!-- Admin User Devices Modal -->
+  <div class="modal-backdrop" id="admin-devices-modal" hidden>
+    <div class="modal-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+        <h2 id="admin-devices-modal-title" style="font-size: 1.15rem;">💻 أجهزة المشترك</h2>
+        <button type="button" class="btn btn-outline btn-sm" id="close-admin-devices-modal">✕</button>
+      </div>
+      <div id="admin-devices-modal-meta" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.85rem;"></div>
+      <div id="admin-devices-modal-list" style="display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1rem;"></div>
+      <div id="admin-devices-modal-actions" style="display: flex; gap: 0.5rem; flex-wrap: wrap;"></div>
+    </div>
+  </div>
 
   <script src="/js/security-client.js" defer></script>
   <script src="/js/admin.js" defer></script>

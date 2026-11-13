@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS users (
     -- Risk state (never auto-ban)
     requires_step_up        INTEGER NOT NULL DEFAULT 0,
     needs_review            INTEGER NOT NULL DEFAULT 0,
+    approved_device_replace INTEGER NOT NULL DEFAULT 0,
     is_banned               INTEGER NOT NULL DEFAULT 0,
     ban_reason              TEXT NULL,
     created_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -45,6 +46,20 @@ CREATE TABLE IF NOT EXISTS device_changes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS device_change_requests (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL,
+    device_label    TEXT NOT NULL DEFAULT '',
+    jwk_thumbprint  TEXT NULL,
+    ip              TEXT NULL,
+    reason          TEXT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected' | 'used'
+    admin_note      TEXT NULL,
+    resolved_at     TEXT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 

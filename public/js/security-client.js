@@ -166,7 +166,10 @@ window.CourseSecurityClient = (() => {
     });
     const data = await readJson(res);
     if (res.status === 200) return { status: 'ok', role: data.role };
-    if (res.status === 202) return { status: 'verify-device', ...data };
+    if (res.status === 202) {
+      if (data.code === 'ADMIN_APPROVAL_REQUIRED') return { status: 'approval-required', ...data };
+      return { status: 'verify-device', ...data };
+    }
     const err = new Error(data.error || 'فشل تسجيل الدخول.');
     Object.assign(err, { status: res.status, code: data.code });
     throw err;
@@ -196,8 +199,22 @@ window.CourseSecurityClient = (() => {
     throw err;
   }
 
+  async function requestDeviceChange(approvalToken, reason = '') {
+    const res = await apiFetch('/api/devices/request-change', {
+      method: 'POST',
+      json: { approvalToken, reason },
+    });
+    const data = await readJson(res);
+    if (res.ok) return data;
+    const err = new Error(data.error || 'فشل إرسال طلب تغيير الجهاز.');
+    Object.assign(err, { status: res.status, code: data.code });
+    throw err;
+  }
+
   const listDevices = () => call('/api/devices');
   const removeDevice = (id) => call(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const requestPortalDeviceChange = (reason = '') =>
+    call('/api/portal/request-device-change', { method: 'POST', json: { reason } });
   const startStepUp = () => call('/api/step-up/start', { method: 'POST' });
   const verifyStepUp = (code) => call('/api/step-up/verify', { method: 'POST', json: { code } });
 
@@ -258,9 +275,11 @@ window.CourseSecurityClient = (() => {
     login,
     register,
     verifyDevice,
+    requestDeviceChange,
     logout,
     listDevices,
     removeDevice,
+    requestPortalDeviceChange,
     startStepUp,
     verifyStepUp,
     startLesson,

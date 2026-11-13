@@ -8,16 +8,28 @@ document.addEventListener('DOMContentLoaded', () => {
   const authAlert = document.getElementById('auth-alert');
 
   const deviceModal = document.getElementById('device-modal');
+  const deviceModalTitle = document.getElementById('device-modal-title');
+  const deviceModalSubtitle = document.getElementById('device-modal-subtitle');
   const deviceVerifyForm = document.getElementById('device-verify-form');
   const deviceOtpInput = document.getElementById('device-otp-input');
   const devOtpBanner = document.getElementById('dev-otp-banner');
   const deviceModalError = document.getElementById('device-modal-error');
+  const deviceModalSuccess = document.getElementById('device-modal-success');
   const replaceDeviceSection = document.getElementById('replace-device-section');
+  const replaceDeviceNotice = document.getElementById('replace-device-notice');
   const replaceDeviceList = document.getElementById('replace-device-list');
-  const changesLeftCount = document.getElementById('changes-left-count');
   const closeDeviceModal = document.getElementById('close-device-modal');
 
+  const adminApprovalSection = document.getElementById('admin-approval-section');
+  const approvalDeviceList = document.getElementById('approval-device-list');
+  const approvalPendingNotice = document.getElementById('approval-pending-notice');
+  const deviceRequestForm = document.getElementById('device-request-form');
+  const deviceChangeReason = document.getElementById('device-change-reason');
+  const requestApprovalSubmit = document.getElementById('request-approval-submit');
+  const closeApprovalModal = document.getElementById('close-approval-modal');
+
   let currentPendingToken = null;
+  let currentApprovalToken = null;
   let currentAtLimit = false;
 
   function showAlert(msg, isSuccess = false) {
@@ -64,6 +76,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (result.status === 'verify-device') {
         openDeviceModal(result);
+        return;
+      }
+      if (result.status === 'approval-required') {
+        openApprovalModal(result);
       }
     } catch (err) {
       showAlert(err.message);
@@ -94,14 +110,52 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  function openApprovalModal(data) {
+    currentApprovalToken = data.approvalToken;
+    currentPendingToken = null;
+    currentAtLimit = false;
+    deviceModalError.hidden = true;
+    deviceModalSuccess.hidden = true;
+    devOtpBanner.hidden = true;
+    deviceVerifyForm.hidden = true;
+    adminApprovalSection.hidden = false;
+
+    deviceModalTitle.textContent = '🔒 يتطلب موافقة الإدارة لتغيير الجهاز';
+    deviceModalSubtitle.textContent = 'الحساب مرتبط بالفعل بجهازين مسموح بهما (2/2).';
+
+    approvalDeviceList.innerHTML = '';
+    (data.devices || []).forEach((d) => {
+      const item = document.createElement('div');
+      item.style.cssText = 'padding:0.55rem 0.7rem;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);font-size:0.86rem;';
+      item.textContent = `💻 ${d.label} (آخر ظهور: ${d.lastSeenAt || 'الآن'})`;
+      approvalDeviceList.appendChild(item);
+    });
+
+    approvalPendingNotice.hidden = !data.hasPendingRequest;
+    deviceChangeReason.value = '';
+    requestApprovalSubmit.disabled = false;
+    requestApprovalSubmit.textContent = data.hasPendingRequest
+      ? '🔄 تحديث طلب الموافقة لدى الإدارة'
+      : '📩 إرسال طلب موافقة للإدارة';
+
+    deviceModal.hidden = false;
+  }
+
   function openDeviceModal(data) {
     currentPendingToken = data.pendingToken;
-    currentAtLimit = Boolean(data.atLimit);
+    currentApprovalToken = null;
+    currentAtLimit = Boolean(data.atLimit && data.canReplace);
     deviceModalError.hidden = true;
+    deviceModalSuccess.hidden = true;
+    adminApprovalSection.hidden = true;
+    deviceVerifyForm.hidden = false;
     deviceOtpInput.value = '';
 
+    deviceModalTitle.textContent = '🔐 تأكيد إضافة جهاز جديد';
+    deviceModalSubtitle.textContent = 'تم رصد تسجيل دخول من جهاز جديد. يرجى إدخال الكود المكون من 6 أرقام المرسل إلى بريدك الإلكتروني.';
+
     if (data.devCodeHint) {
-      devOtpBanner.textContent = `وضع الاختبار المجاني — كود التحقق المباشر هو: ${data.devCodeHint}`;
+      devOtpBanner.textContent = `وضع الاختبار المحلي — كود التحقق المباشر هو: ${data.devCodeHint}`;
       devOtpBanner.hidden = false;
       deviceOtpInput.value = data.devCodeHint;
     } else {
@@ -110,7 +164,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (currentAtLimit && Array.isArray(data.devices)) {
       replaceDeviceSection.hidden = false;
-      changesLeftCount.textContent = String(data.changesLeft ?? 0);
+      replaceDeviceNotice.textContent = data.isAdmin
+        ? 'تم بلوغ حد العرض (2/2). بصفتك المدير يمكنك تأكيد كود البريد الإلكتروني واستبدال أي جهاز أدناه بلا قيود:'
+        : 'تمت موافقة الإدارة على استبدال جهاز واحد. اختر الجهاز الذي تريد استبداله ثم أدخل كود البريد الإلكتروني:';
       replaceDeviceList.innerHTML = '';
       data.devices.forEach((d, idx) => {
         const label = document.createElement('label');
@@ -135,6 +191,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
   closeDeviceModal.addEventListener('click', () => {
     deviceModal.hidden = true;
+  });
+
+  closeApprovalModal?.addEventListener('click', () => {
+    deviceModal.hidden = true;
+  });
+
+  deviceRequestForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    deviceModalError.hidden = true;
+    deviceModalSuccess.hidden = true;
+    requestApprovalSubmit.disabled = true;
+    try {
+      const res = await CourseSecurityClient.requestDeviceChange(
+        currentApprovalToken,
+        deviceChangeReason.value.trim()
+      );
+      approvalPendingNotice.hidden = false;
+      deviceModalSuccess.textContent = res.alreadyPending
+        ? 'تم تحديث طلبك القائم لدى الإدارة بنجاح. سيتم إشعارك فور الموافقة.'
+        : 'تم إرسال طلب تغيير الجهاز إلى الإدارة بنجاح. فور موافقة الإدارة يمكنك تسجيل الدخول واستلام كود التحقق على بريدك.';
+      deviceModalSuccess.hidden = false;
+      requestApprovalSubmit.textContent = '✓ تم إرسال الطلب للإدارة';
+    } catch (err) {
+      deviceModalError.textContent = err.message;
+      deviceModalError.hidden = false;
+      requestApprovalSubmit.disabled = false;
+    }
   });
 
   deviceVerifyForm.addEventListener('submit', async (e) => {

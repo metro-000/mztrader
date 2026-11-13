@@ -11,24 +11,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Tab Switching
-  document.querySelectorAll('[data-admin-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('[data-admin-tab]').forEach((b) => b.classList.remove('active'));
-      document.querySelectorAll('.admin-tab-panel').forEach((p) => { p.hidden = true; });
-      btn.classList.add('active');
-      const panel = document.getElementById(btn.dataset.adminTab);
-      if (panel) panel.hidden = false;
+  function activateAdminTab(tabId) {
+    document.querySelectorAll('[data-admin-tab]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.adminTab === tabId);
     });
+    document.querySelectorAll('.admin-tab-panel').forEach((p) => {
+      p.hidden = p.id !== tabId;
+    });
+  }
+
+  document.querySelectorAll('[data-admin-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => activateAdminTab(btn.dataset.adminTab));
+  });
+
+  document.getElementById('jump-to-device-requests-btn')?.addEventListener('click', () => {
+    activateAdminTab('tab-security');
   });
 
   // Load Overview
+  let currentAdminData = null;
+
   async function loadAdminData() {
     try {
       const data = await CourseSecurityClient.call('/api/admin/overview');
+      currentAdminData = data;
       renderKpis(data);
       renderUsersTable(data.users);
       renderCodesTable(data.activationCodes);
       renderCourseManager(data.course);
+      renderDeviceRequests(data.deviceRequests || []);
       renderSecurityQueue(data.users);
       renderOtpTable(data.otpLogs);
     } catch (err) {
@@ -83,7 +94,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       tdWm.innerHTML = `<span class="badge badge-wm">${escapeHtml(u.watermark_code)}</span>`;
 
       const tdDev = document.createElement('td');
-      tdDev.textContent = `${u.device_count} / 2`;
+      tdDev.innerHTML = `${u.device_count} / 2 ${u.approved_device_replace ? '<span class="badge badge-emerald" style="margin-right:0.25rem;">إذن تبديل</span>' : ''}`;
 
       const tdRisk = document.createElement('td');
       const riskClass = u.risk_score >= 100 ? 'badge-crimson' : u.risk_score >= 50 ? 'badge-amber' : 'badge-emerald';
@@ -101,6 +112,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       const tdActions = document.createElement('td');
       const wrap = document.createElement('div');
       wrap.style.cssText = 'display:flex;gap:0.4rem;flex-wrap:wrap;';
+
+      const devicesBtn = document.createElement('button');
+      devicesBtn.className = 'btn btn-outline btn-sm';
+      devicesBtn.textContent = `💻 الأجهزة (${u.device_count})`;
+      devicesBtn.addEventListener('click', () => openAdminDevicesModal(u.id));
 
       const enrollBtn = document.createElement('button');
       enrollBtn.className = u.is_enrolled ? 'btn btn-outline btn-sm' : 'btn btn-emerald btn-sm';
@@ -126,6 +142,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadAdminData();
       });
 
+      wrap.appendChild(devicesBtn);
       wrap.appendChild(enrollBtn);
       if (u.role !== 'admin') {
         wrap.appendChild(banBtn);
@@ -311,7 +328,202 @@ document.addEventListener('DOMContentLoaded', async () => {
     await runLeakLookup(code);
   });
 
-  // ── Tab 4: Security Review Queue ─────────────────────────────────
+  // ── Tab 4: Device Change Requests & Security Review Queue ────────
+  const adminDevicesModal = document.getElementById('admin-devices-modal');
+  document.getElementById('close-admin-devices-modal')?.addEventListener('click', () => {
+    adminDevicesModal.hidden = true;
+  });
+
+  async function openAdminDevicesModal(userId) {
+    const u = (currentAdminData?.users || []).find((item) => item.id === userId);
+    if (!u) return;
+
+    document.getElementById('admin-devices-modal-title').textContent = `💻 أجهزة: ${u.full_name}`;
+    document.getElementById('admin-devices-modal-meta').textContent = `${u.email} • الكود المائي: ${u.watermark_code} • المسجلة: ${u.device_count} / 2`;
+
+    const listEl = document.getElementById('admin-devices-modal-list');
+    listEl.innerHTML = '';
+    if (!u.devices || u.devices.length === 0) {
+      listEl.innerHTML = '<div style="color:var(--text-muted);font-size:0.88rem;">لا توجد أجهزة مرتبطة بهذا الحساب حالياً.</div>';
+    } else {
+      u.devices.forEach((d) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:0.6rem;padding:0.7rem;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);flex-wrap:wrap;';
+        const info = document.createElement('div');
+        info.innerHTML = `<div style="font-weight:700;font-size:0.9rem;">${escapeHtml(d.device_label)}</div>
+          <div style="font-size:0.78rem;color:var(--text-muted);">IP: ${escapeHtml(d.last_ip || 'N/A')} • آخر نشاط: ${escapeHtml(d.last_seen_at || '')}</div>`;
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-outline btn-sm';
+        delBtn.style.cssText = 'border-color:var(--crimson);color:var(--crimson);';
+        delBtn.textContent = '🗑️ إزالة الجهاز';
+        delBtn.addEventListener('click', async () => {
+          if (!window.confirm(`إزالة الجهاز "${d.device_label}" من حساب ${u.full_name}؟`)) return;
+          try {
+            await CourseSecurityClient.call(`/api/admin/users/${u.id}/devices/${d.id}`, { method: 'DELETE' });
+            notify('تمت إزالة الجهاز بنجاح.');
+            await loadAdminData();
+            await openAdminDevicesModal(u.id);
+          } catch (err) {
+            notify(err.message, true);
+          }
+        });
+
+        row.appendChild(info);
+        row.appendChild(delBtn);
+        listEl.appendChild(row);
+      });
+    }
+
+    const actionsEl = document.getElementById('admin-devices-modal-actions');
+    actionsEl.innerHTML = '';
+    if (u.role !== 'admin') {
+      const toggleApprovalBtn = document.createElement('button');
+      toggleApprovalBtn.type = 'button';
+      toggleApprovalBtn.className = u.approved_device_replace ? 'btn btn-outline btn-sm' : 'btn btn-emerald btn-sm';
+      toggleApprovalBtn.textContent = u.approved_device_replace
+        ? '❌ سحب إذن استبدال الجهاز'
+        : '✅ منح إذن استبدال جهاز (مرة واحدة)';
+      toggleApprovalBtn.addEventListener('click', async () => {
+        try {
+          await CourseSecurityClient.call(`/api/admin/users/${u.id}/approve-device-change`, {
+            method: 'POST',
+            json: { approved: !u.approved_device_replace },
+          });
+          notify(u.approved_device_replace ? 'تم سحب إذن استبدال الجهاز.' : 'تم منح المشترك إذن استبدال جهاز واحد عند تسجيل الدخول القادم.');
+          await loadAdminData();
+          await openAdminDevicesModal(u.id);
+        } catch (err) {
+          notify(err.message, true);
+        }
+      });
+      actionsEl.appendChild(toggleApprovalBtn);
+    }
+
+    adminDevicesModal.hidden = false;
+  }
+
+  function renderDeviceRequests(requests) {
+    const pendingCount = requests.filter((r) => r.status === 'pending').length;
+    const tabBadge = document.getElementById('pending-req-tab-badge');
+    const banner = document.getElementById('pending-req-banner');
+    const bannerText = document.getElementById('pending-req-banner-text');
+
+    if (pendingCount > 0) {
+      tabBadge.textContent = String(pendingCount);
+      tabBadge.hidden = false;
+      bannerText.textContent = `🔔 يوجد ${pendingCount} طلب لتغيير أو استبدال جهاز من المشتركين بانتظار قرارك.`;
+      banner.hidden = false;
+    } else {
+      tabBadge.hidden = true;
+      banner.hidden = true;
+    }
+
+    const container = document.getElementById('device-requests-list');
+    container.innerHTML = '';
+    if (requests.length === 0) {
+      container.innerHTML = '<div style="color:var(--text-muted);">لا توجد طلبات تغيير أجهزة من المشتركين حالياً.</div>';
+      return;
+    }
+
+    const statusBadgeMap = {
+      pending: '<span class="badge badge-amber">⏳ بانتظار الموافقة</span>',
+      approved: '<span class="badge badge-emerald">✓ تمت الموافقة (ينتظر OTP المشترك)</span>',
+      used: '<span class="badge badge-muted">✔ مكتمل</span>',
+      rejected: '<span class="badge badge-crimson">✕ مرفوض</span>',
+    };
+
+    requests.forEach((r) => {
+      const box = document.createElement('div');
+      const borderCol = r.status === 'pending' ? 'var(--amber)' : 'var(--border)';
+      box.style.cssText = `padding:1rem;border:1px solid ${borderCol};border-radius:12px;background:var(--surface-2);`;
+
+      const devicesHtml = (r.devices || []).map((d) =>
+        `<span class="code-pill" style="font-size:0.78rem;">${escapeHtml(d.device_label)} (${escapeHtml(d.last_ip || 'N/A')})</span>`
+      ).join(' ');
+
+      box.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.65rem;flex-wrap:wrap;margin-bottom:0.5rem;">
+          <div>
+            <strong>${escapeHtml(r.full_name)}</strong>
+            <span style="color:var(--text-muted);font-size:0.86rem;"> (${escapeHtml(r.email)})</span>
+            <span class="badge badge-wm" style="margin-right:0.35rem;">${escapeHtml(r.watermark_code)}</span>
+          </div>
+          ${statusBadgeMap[r.status] || escapeHtml(r.status)}
+        </div>
+        <div style="font-size:0.84rem;color:var(--text-muted);margin-bottom:0.45rem;">
+          الجهاز المطلوب: <strong>${escapeHtml(r.device_label || 'غير محدد')}</strong> • IP: <code>${escapeHtml(r.ip || 'N/A')}</code> • التاريخ: ${escapeHtml(r.created_at)}
+        </div>
+        ${r.reason ? `<div style="font-size:0.86rem;margin-bottom:0.5rem;">السبب: "${escapeHtml(r.reason)}"</div>` : ''}
+        <div style="font-size:0.82rem;margin-bottom:0.75rem;">الأجهزة الحالية (${(r.devices || []).length}/2): ${devicesHtml || 'لا يوجد'}</div>
+      `;
+
+      if (r.status === 'pending') {
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;';
+
+        const approveBtn = document.createElement('button');
+        approveBtn.className = 'btn btn-emerald btn-sm';
+        approveBtn.textContent = '✅ منح إذن استبدال (OTP)';
+        approveBtn.addEventListener('click', async () => {
+          try {
+            await CourseSecurityClient.call(`/api/admin/device-requests/${r.id}/resolve`, {
+              method: 'POST',
+              json: { action: 'approve' },
+            });
+            notify(`تمت الموافقة لـ ${r.full_name} على استبدال جهاز واحد بعد تأكيد البريد الإلكتروني.`);
+            await loadAdminData();
+          } catch (err) {
+            notify(err.message, true);
+          }
+        });
+        actions.appendChild(approveBtn);
+
+        (r.devices || []).forEach((d) => {
+          const removeOldBtn = document.createElement('button');
+          removeOldBtn.className = 'btn btn-outline btn-sm';
+          removeOldBtn.textContent = `🗑️ إزالة "${d.device_label}" فوراً`;
+          removeOldBtn.addEventListener('click', async () => {
+            try {
+              await CourseSecurityClient.call(`/api/admin/device-requests/${r.id}/resolve`, {
+                method: 'POST',
+                json: { action: 'approve', removeDeviceId: d.id },
+              });
+              notify(`تمت إزالة الجهاز القديم لـ ${r.full_name} ليتمكن من تفعيل جهازه الجديد عبر OTP.`);
+              await loadAdminData();
+            } catch (err) {
+              notify(err.message, true);
+            }
+          });
+          actions.appendChild(removeOldBtn);
+        });
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'btn btn-outline btn-sm';
+        rejectBtn.style.cssText = 'border-color:var(--crimson);color:var(--crimson);';
+        rejectBtn.textContent = '❌ رفض الطلب';
+        rejectBtn.addEventListener('click', async () => {
+          try {
+            await CourseSecurityClient.call(`/api/admin/device-requests/${r.id}/resolve`, {
+              method: 'POST',
+              json: { action: 'reject' },
+            });
+            notify('تم رفض طلب تغيير الجهاز.');
+            await loadAdminData();
+          } catch (err) {
+            notify(err.message, true);
+          }
+        });
+        actions.appendChild(rejectBtn);
+
+        box.appendChild(actions);
+      }
+
+      container.appendChild(box);
+    });
+  }
+
   function renderSecurityQueue(users) {
     const container = document.getElementById('security-queue-list');
     container.innerHTML = '';

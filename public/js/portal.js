@@ -323,13 +323,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── 5. My Registered Devices Modal ───────────────────────────────
   const devicesModal = document.getElementById('devices-modal');
   const devicesModalError = document.getElementById('devices-modal-error');
+  const devicesModalSuccess = document.getElementById('devices-modal-success');
+  const devicesPolicyText = document.getElementById('devices-policy-text');
+  const portalRequestBox = document.getElementById('portal-request-device-box');
+  const portalRequestStatus = document.getElementById('portal-request-status');
+  const portalRequestForm = document.getElementById('portal-device-request-form');
+  const portalRequestReason = document.getElementById('portal-device-reason');
+  const portalRequestBtn = document.getElementById('portal-device-request-btn');
 
   async function openDevicesModal() {
     devicesModalError.hidden = true;
+    devicesModalSuccess.hidden = true;
     devicesModal.hidden = false;
     try {
       const data = await CourseSecurityClient.listDevices();
-      document.getElementById('modal-changes-left').textContent = String(data.changesLeft ?? 0);
+      const canRemove = Boolean(data.canRemoveDevices);
+
+      devicesPolicyText.textContent = canRemove
+        ? 'بصفتك المدير يمكنك استعراض أو إزالة أي جهاز أو استبداله بحرية بعد تأكيد كود البريد الإلكتروني.'
+        : 'لحماية المحتوى، لا يُسمح للمشترك بإزالة أو استبدال الجهاز بنفسه. إذا احتجت لاستبدال جهازك، أرسل طلب إذن للإدارة.';
+
       const container = document.getElementById('devices-list-container');
       container.innerHTML = '';
 
@@ -355,34 +368,79 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         info.appendChild(title);
         info.appendChild(sub);
-
-        const removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'btn btn-outline btn-sm';
-        removeBtn.textContent = 'إزالة الجهاز';
-        removeBtn.addEventListener('click', async () => {
-          try {
-            await CourseSecurityClient.removeDevice(d.id);
-            if (d.current) {
-              location.href = '/';
-              return;
-            }
-            await openDevicesModal();
-          } catch (err) {
-            devicesModalError.textContent = err.message;
-            devicesModalError.hidden = false;
-          }
-        });
-
         row.appendChild(info);
-        row.appendChild(removeBtn);
+
+        if (canRemove) {
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn btn-outline btn-sm';
+          removeBtn.textContent = 'إزالة الجهاز';
+          removeBtn.addEventListener('click', async () => {
+            try {
+              await CourseSecurityClient.removeDevice(d.id);
+              if (d.current) {
+                location.href = '/';
+                return;
+              }
+              await openDevicesModal();
+            } catch (err) {
+              devicesModalError.textContent = err.message;
+              devicesModalError.hidden = false;
+            }
+          });
+          row.appendChild(removeBtn);
+        }
+
         container.appendChild(row);
       });
+
+      if (canRemove) {
+        portalRequestBox.hidden = true;
+      } else {
+        portalRequestBox.hidden = false;
+        portalRequestReason.value = '';
+        portalRequestBtn.disabled = false;
+        if (data.approvedDeviceReplace) {
+          portalRequestStatus.className = 'alert alert-success';
+          portalRequestStatus.textContent = '✅ تمت موافقة الإدارة! يمكنك الآن تسجيل الدخول من جهازك الجديد واستبدال جهاز واحد عبر كود التحقق البريدي.';
+          portalRequestStatus.hidden = false;
+          portalRequestForm.hidden = true;
+        } else if (data.hasPendingRequest) {
+          portalRequestStatus.className = 'alert alert-warning';
+          portalRequestStatus.textContent = '⏳ لديك طلب تغيير جهاز قيد المراجعة لدى الإدارة حالياً.';
+          portalRequestStatus.hidden = false;
+          portalRequestForm.hidden = false;
+          portalRequestBtn.textContent = '🔄 تحديث الطلب';
+        } else {
+          portalRequestStatus.hidden = true;
+          portalRequestForm.hidden = false;
+          portalRequestBtn.textContent = '📩 طلب تغيير جهاز من الإدارة';
+        }
+      }
     } catch (err) {
       devicesModalError.textContent = err.message;
       devicesModalError.hidden = false;
     }
   }
+
+  portalRequestForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    devicesModalError.hidden = true;
+    devicesModalSuccess.hidden = true;
+    portalRequestBtn.disabled = true;
+    try {
+      const res = await CourseSecurityClient.requestPortalDeviceChange(portalRequestReason.value.trim());
+      devicesModalSuccess.textContent = res.alreadyPending
+        ? 'تم تحديث طلبك القائم لدى الإدارة.'
+        : 'تم إرسال طلب تغيير الجهاز إلى الإدارة بنجاح.';
+      devicesModalSuccess.hidden = false;
+      await openDevicesModal();
+    } catch (err) {
+      devicesModalError.textContent = err.message;
+      devicesModalError.hidden = false;
+      portalRequestBtn.disabled = false;
+    }
+  });
 
   document.getElementById('open-devices-btn')?.addEventListener('click', openDevicesModal);
   document.getElementById('close-devices-modal')?.addEventListener('click', () => {

@@ -124,11 +124,19 @@
         <h2 style="font-size: 1.2rem;">💻 أجهزتي المسجلة (الحد الأقصى: جهازين)</h2>
         <button type="button" class="btn btn-outline btn-sm" id="close-devices-modal">✕</button>
       </div>
-      <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 0.9rem;">
-        متبقي لك <strong id="modal-changes-left">2</strong> عمليات استبدال أو إزالة أجهزة خلال آخر 30 يوماً.
+      <p id="devices-policy-text" style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 0.9rem;">
+        حساب المشترك مرتبط بحد أقصى جهازين. إذا احتجت لتغيير جهازك، أرسل طلب موافقة للإدارة.
       </p>
       <div id="devices-modal-error" class="alert alert-error" hidden></div>
-      <div id="devices-list-container" style="display: flex; flex-direction: column; gap: 0.65rem;"></div>
+      <div id="devices-modal-success" class="alert alert-success" hidden></div>
+      <div id="devices-list-container" style="display: flex; flex-direction: column; gap: 0.65rem; margin-bottom: 1rem;"></div>
+      <div id="portal-request-device-box" hidden>
+        <div id="portal-request-status" class="alert alert-warning" style="font-size: 0.85rem; margin-bottom: 0.75rem;" hidden></div>
+        <form id="portal-device-request-form" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <input type="text" id="portal-device-reason" class="input" maxlength="300" placeholder="سبب تغيير الجهاز (اختياري)..." style="flex: 1; min-width: 180px;">
+          <button type="submit" id="portal-device-request-btn" class="btn btn-primary btn-sm">📩 طلب تغيير جهاز من الإدارة</button>
+        </form>
+      </div>
     </div>
   </div>
 

@@ -188,7 +188,7 @@ function buildInsertIgnoreSql(rest) {
   return `INSERT OR IGNORE INTO ${rest}`;
 }
 
-const SERIAL_ID_INSERT_RE = /^\s*INSERT\s+INTO\s+(users|user_devices|device_changes|email_codes|security_events|courses|modules|activation_codes)\b/i;
+const SERIAL_ID_INSERT_RE = /^\s*INSERT\s+INTO\s+(users|user_devices|device_changes|device_change_requests|email_codes|security_events|courses|modules|activation_codes)\b/i;
 
 async function queryAll(sql, params = [], conn = null) {
   if (DB_ENGINE === 'postgres') {
@@ -301,6 +301,7 @@ const MYSQL_SCHEMA_STATEMENTS = [
     last_country_at DATETIME NULL,
     requires_step_up TINYINT(1) NOT NULL DEFAULT 0,
     needs_review TINYINT(1) NOT NULL DEFAULT 0,
+    approved_device_replace TINYINT(1) NOT NULL DEFAULT 0,
     is_banned TINYINT(1) NOT NULL DEFAULT 0,
     ban_reason VARCHAR(255) NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -322,6 +323,20 @@ const MYSQL_SCHEMA_STATEMENTS = [
     user_id BIGINT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_user_time (user_id, created_at),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS device_change_requests (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    device_label VARCHAR(100) NOT NULL DEFAULT '',
+    jwk_thumbprint VARCHAR(64) NULL,
+    ip VARCHAR(45) NULL,
+    reason TEXT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    admin_note TEXT NULL,
+    resolved_at DATETIME NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_dcr_user_status (user_id, status),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   `CREATE TABLE IF NOT EXISTS email_codes (
@@ -430,6 +445,7 @@ const POSTGRES_SCHEMA_STATEMENTS = [
     last_country_at TIMESTAMPTZ NULL,
     requires_step_up SMALLINT NOT NULL DEFAULT 0,
     needs_review SMALLINT NOT NULL DEFAULT 0,
+    approved_device_replace SMALLINT NOT NULL DEFAULT 0,
     is_banned SMALLINT NOT NULL DEFAULT 0,
     ban_reason TEXT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -451,6 +467,19 @@ const POSTGRES_SCHEMA_STATEMENTS = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   `CREATE INDEX IF NOT EXISTS idx_device_changes_user_time ON device_changes (user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS device_change_requests (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_label TEXT NOT NULL DEFAULT '',
+    jwk_thumbprint TEXT NULL,
+    ip TEXT NULL,
+    reason TEXT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_note TEXT NULL,
+    resolved_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_dcr_user_status ON device_change_requests (user_id, status)`,
   `CREATE TABLE IF NOT EXISTS email_codes (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -642,6 +671,25 @@ async function syncAdminFromEnv(courseId) {
   await execRun(buildInsertIgnoreSql('enrollments (user_id, course_id, activated_via) VALUES (?, ?, ?)'), [existingAdmin.id, courseId, 'env-admin']);
 }
 
+async function ensureMigrations() {
+  if (DB_ENGINE === 'postgres') {
+    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_device_replace SMALLINT NOT NULL DEFAULT 0');
+  } else if (DB_ENGINE === 'mysql') {
+    const [cols] = await mysqlPool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'approved_device_replace'`
+    );
+    if (cols.length === 0) {
+      await mysqlPool.query('ALTER TABLE users ADD COLUMN approved_device_replace TINYINT(1) NOT NULL DEFAULT 0');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(users)').all();
+    if (!cols.some((c) => c.name === 'approved_device_replace')) {
+      sqlite.exec('ALTER TABLE users ADD COLUMN approved_device_replace INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+}
+
 async function initDb() {
   if (DB_ENGINE === 'postgres') {
     await initRemoteSchema(POSTGRES_SCHEMA_STATEMENTS, pgPool);
@@ -652,6 +700,7 @@ async function initDb() {
     sqlite.exec(schemaSql);
   }
 
+  await ensureMigrations();
   const courseId = await ensureCourseSeeded();
   await syncAdminFromEnv(courseId);
 }
@@ -666,6 +715,7 @@ function mapUser(row) {
     active_stream_device_id: row.active_stream_device_id ? Number(row.active_stream_device_id) : null,
     requires_step_up: Boolean(row.requires_step_up),
     needs_review: Boolean(row.needs_review),
+    approved_device_replace: Boolean(row.approved_device_replace),
     is_banned: Boolean(row.is_banned),
     heartbeat_age_s: row.heartbeat_age_s !== null && row.heartbeat_age_s !== undefined ? Number(row.heartbeat_age_s) : null,
     country_age_min: row.country_age_min !== null && row.country_age_min !== undefined ? Number(row.country_age_min) : null,
@@ -767,7 +817,7 @@ async function countRecentDeviceChanges(userId, conn = null) {
   return Number(row?.cnt ?? 0);
 }
 
-async function registerDeviceAtomic({ userId, jkt, publicKeyJwk, label, ip, replaceDeviceId, maxDevices, maxChangesPer30d }) {
+async function registerDeviceAtomic({ userId, jkt, publicKeyJwk, label, ip, replaceDeviceId, maxDevices, maxChangesPer30d, bypassQuota = false }) {
   return withTx(async (conn) => {
     if (DB_ENGINE !== 'sqlite') {
       await queryOne('SELECT id FROM users WHERE id = ? FOR UPDATE', [Number(userId)], conn);
@@ -781,7 +831,9 @@ async function registerDeviceAtomic({ userId, jkt, publicKeyJwk, label, ip, repl
 
     if (Number(cntRow?.cnt ?? 0) >= maxDevices) {
       if (!replaceDeviceId) return { status: 'limit', replaced: false };
-      if ((await countRecentDeviceChanges(userId, conn)) >= maxChangesPer30d) return { status: 'quota', replaced: false };
+      if (!bypassQuota && (await countRecentDeviceChanges(userId, conn)) >= maxChangesPer30d) {
+        return { status: 'quota', replaced: false };
+      }
 
       const del = await execRun('DELETE FROM user_devices WHERE id = ? AND user_id = ?', [Number(replaceDeviceId), Number(userId)], conn);
       if (del.changes !== 1) return { status: 'limit', replaced: false };
@@ -799,19 +851,146 @@ async function registerDeviceAtomic({ userId, jkt, publicKeyJwk, label, ip, repl
   });
 }
 
-async function removeDeviceWithQuota(userId, deviceId, maxChangesPer30d) {
+async function verifyCodeAndRegisterDevice({ userId, purpose, jkt, code, publicKeyJwk, label, ip, replaceDeviceId, maxDevices }) {
+  if (!/^\d{6}$/.test(String(code))) return { status: 'code_invalid' };
+
+  return withTx(async (conn) => {
+    const userRow = DB_ENGINE !== 'sqlite'
+      ? await queryOne('SELECT id, role, approved_device_replace FROM users WHERE id = ? FOR UPDATE', [Number(userId)], conn)
+      : await queryOne('SELECT id, role, approved_device_replace FROM users WHERE id = ?', [Number(userId)], conn);
+    if (!userRow) return { status: 'code_invalid' };
+
+    const codeRow = await queryOne(
+      `SELECT id, code_hash, attempts FROM email_codes
+        WHERE user_id = ? AND purpose = ? AND jwk_thumbprint = ?
+          AND consumed_at IS NULL AND expires_at > ${nowExpr}
+        ORDER BY id DESC LIMIT 1`,
+      [Number(userId), String(purpose), String(jkt)],
+      conn
+    );
+    if (!codeRow || Number(codeRow.attempts) >= 5) return { status: 'code_invalid' };
+
+    const match = crypto.timingSafeEqual(Buffer.from(codeRow.code_hash, 'hex'), Buffer.from(hashCode(code), 'hex'));
+    if (!match) {
+      await execRun('UPDATE email_codes SET attempts = attempts + 1 WHERE id = ?', [codeRow.id], conn);
+      return { status: 'code_invalid' };
+    }
+
+    const existing = await queryOne(
+      'SELECT id FROM user_devices WHERE user_id = ? AND jwk_thumbprint = ? LIMIT 1',
+      [Number(userId), String(jkt)],
+      conn
+    );
+    let replaced = false;
+
+    if (!existing) {
+      const cntRow = await queryOne('SELECT COUNT(*) AS cnt FROM user_devices WHERE user_id = ?', [Number(userId)], conn);
+      const isAdmin = userRow.role === 'admin';
+      const hasAdminApproval = Boolean(userRow.approved_device_replace);
+
+      if (Number(cntRow?.cnt ?? 0) >= maxDevices) {
+        if (!isAdmin && !hasAdminApproval) {
+          return { status: 'approval_required', replaced: false };
+        }
+        if (!replaceDeviceId) {
+          return { status: 'limit', replaced: false };
+        }
+        const del = await execRun(
+          'DELETE FROM user_devices WHERE id = ? AND user_id = ?',
+          [Number(replaceDeviceId), Number(userId)],
+          conn
+        );
+        if (del.changes !== 1) return { status: 'limit', replaced: false };
+
+        await execRun('INSERT INTO device_changes (user_id) VALUES (?)', [Number(userId)], conn);
+        if (!isAdmin) {
+          await execRun('UPDATE users SET approved_device_replace = 0 WHERE id = ?', [Number(userId)], conn);
+          await execRun(
+            `UPDATE device_change_requests
+                SET status = 'used', resolved_at = COALESCE(resolved_at, ${nowExpr})
+              WHERE user_id = ? AND status = 'approved'`,
+            [Number(userId)],
+            conn
+          );
+        }
+        replaced = true;
+      }
+
+      await execRun(
+        `INSERT INTO user_devices (user_id, device_label, jwk_thumbprint, public_key_jwk, last_ip)
+         VALUES (?, ?, ?, ?, ?)`,
+        [Number(userId), label, String(jkt), publicKeyJwk, ip ?? null],
+        conn
+      );
+    }
+
+    const consumed = await execRun(
+      `UPDATE email_codes SET consumed_at = ${nowExpr} WHERE id = ? AND consumed_at IS NULL`,
+      [codeRow.id],
+      conn
+    );
+    if (consumed.changes !== 1) {
+      throw new Error('OTP race conflict');
+    }
+
+    return { status: 'ok', replaced };
+  });
+}
+
+async function removeDeviceWithQuota(userId, deviceId, maxChangesPer30d, { bypassQuota = false } = {}) {
   return withTx(async (conn) => {
     if (DB_ENGINE !== 'sqlite') {
       await queryOne('SELECT id FROM users WHERE id = ? FOR UPDATE', [Number(userId)], conn);
     }
-    if ((await countRecentDeviceChanges(userId, conn)) >= maxChangesPer30d) return 'quota';
+    if (!bypassQuota && (await countRecentDeviceChanges(userId, conn)) >= maxChangesPer30d) return 'quota';
 
     const del = await execRun('DELETE FROM user_devices WHERE id = ? AND user_id = ?', [Number(deviceId), Number(userId)], conn);
     if (del.changes !== 1) return 'not_found';
 
+    await execRun(
+      'UPDATE users SET active_stream_id = NULL, active_stream_device_id = NULL WHERE id = ? AND active_stream_device_id = ?',
+      [Number(userId), Number(deviceId)],
+      conn
+    );
     await execRun('INSERT INTO device_changes (user_id) VALUES (?)', [Number(userId)], conn);
     return 'ok';
   });
+}
+
+async function hasPendingDeviceChangeRequest(userId) {
+  const row = await queryOne(
+    "SELECT id FROM device_change_requests WHERE user_id = ? AND status = 'pending' LIMIT 1",
+    [Number(userId)]
+  );
+  return Boolean(row);
+}
+
+async function createDeviceChangeRequest({ userId, deviceLabel, jkt, ip, reason }) {
+  const cleanLabel = String(deviceLabel || 'متصفح الويب').slice(0, 100);
+  const cleanReason = String(reason || '').trim().slice(0, 400);
+  const cleanJkt = jkt ? String(jkt).slice(0, 64) : null;
+
+  const existing = await queryOne(
+    "SELECT id, reason FROM device_change_requests WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+    [Number(userId)]
+  );
+  if (existing) {
+    const mergedReason = cleanReason || existing.reason || null;
+    await execRun(
+      `UPDATE device_change_requests
+          SET device_label = ?, jwk_thumbprint = ?, ip = ?, reason = ?
+        WHERE id = ?`,
+      [cleanLabel, cleanJkt, ip ?? null, mergedReason, existing.id]
+    );
+    return { id: Number(existing.id), alreadyPending: true };
+  }
+
+  const res = await execRun(
+    `INSERT INTO device_change_requests (user_id, device_label, jwk_thumbprint, ip, reason, status)
+     VALUES (?, ?, ?, ?, ?, 'pending')`,
+    [Number(userId), cleanLabel, cleanJkt, ip ?? null, cleanReason || null]
+  );
+  return { id: Number(res.lastInsertRowid), alreadyPending: false };
 }
 
 // ── DPoP Replay Cache ──────────────────────────────────────────────
@@ -1007,7 +1186,7 @@ async function clearStepUp(userId) {
 async function getAdminOverview() {
   const users = await queryAll(`
     SELECT u.id, u.full_name, u.email, u.phone, u.role, u.watermark_code,
-           u.requires_step_up, u.needs_review, u.is_banned, u.ban_reason,
+           u.requires_step_up, u.needs_review, u.approved_device_replace, u.is_banned, u.ban_reason,
            u.last_country, u.last_heartbeat_at, u.created_at,
            (SELECT COUNT(*) FROM user_devices d WHERE d.user_id = u.id) AS device_count,
            (SELECT COUNT(*) FROM enrollments e WHERE e.user_id = u.id) AS enroll_count
@@ -1016,10 +1195,12 @@ async function getAdminOverview() {
   `);
 
   const enrichedUsers = [];
+  const devicesByUserId = new Map();
   for (const u of users) {
     const riskScore = await currentRiskScore(u.id);
     const events = await queryAll('SELECT id, type, points, ip, meta, created_at FROM security_events WHERE user_id = ? ORDER BY id DESC LIMIT 15', [u.id]);
     const devices = await queryAll('SELECT id, device_label, last_ip, last_seen_at, created_at FROM user_devices WHERE user_id = ? ORDER BY last_seen_at DESC', [u.id]);
+    devicesByUserId.set(Number(u.id), devices);
     enrichedUsers.push({
       ...mapUser(u),
       is_enrolled: Number(u.enroll_count) > 0,
@@ -1029,6 +1210,21 @@ async function getAdminOverview() {
       devices,
     });
   }
+
+  const deviceRequestsRaw = await queryAll(`
+    SELECT r.id, r.user_id, r.device_label, r.ip, r.reason, r.status, r.admin_note, r.resolved_at, r.created_at,
+           u.full_name, u.email, u.watermark_code
+      FROM device_change_requests r
+      JOIN users u ON u.id = r.user_id
+     ORDER BY (CASE WHEN r.status = 'pending' THEN 0 ELSE 1 END) ASC, r.id DESC
+     LIMIT 40
+  `);
+  const deviceRequests = deviceRequestsRaw.map((r) => ({
+    ...r,
+    id: Number(r.id),
+    user_id: Number(r.user_id),
+    devices: devicesByUserId.get(Number(r.user_id)) || [],
+  }));
 
   const activationCodes = await queryAll(`
     SELECT a.*, u.email AS used_by_email, u.full_name AS used_by_name
@@ -1053,6 +1249,7 @@ async function getAdminOverview() {
     users: enrichedUsers,
     activationCodes,
     otpLogs,
+    deviceRequests,
     course: course ? { ...course, modules, videos } : null,
   };
 }
@@ -1146,6 +1343,107 @@ async function adminResetDeviceQuota(userId) {
   await execRun('DELETE FROM device_changes WHERE user_id = ?', [Number(userId)]);
 }
 
+async function adminSetDeviceReplaceApproval(userId, approved) {
+  await execRun('UPDATE users SET approved_device_replace = ? WHERE id = ?', [approved ? 1 : 0, Number(userId)]);
+  if (!approved) {
+    await execRun(
+      `UPDATE device_change_requests SET status = 'rejected', resolved_at = ${nowExpr} WHERE user_id = ? AND status = 'approved'`,
+      [Number(userId)]
+    );
+  }
+}
+
+async function adminRemoveUserDevice(userId, deviceId) {
+  return withTx(async (conn) => {
+    const del = await execRun(
+      'DELETE FROM user_devices WHERE id = ? AND user_id = ?',
+      [Number(deviceId), Number(userId)],
+      conn
+    );
+    if (del.changes !== 1) return false;
+
+    await execRun(
+      'UPDATE users SET active_stream_id = NULL, active_stream_device_id = NULL WHERE id = ? AND active_stream_device_id = ?',
+      [Number(userId), Number(deviceId)],
+      conn
+    );
+    await execRun('INSERT INTO device_changes (user_id) VALUES (?)', [Number(userId)], conn);
+    await execRun(
+      `UPDATE device_change_requests
+          SET status = 'used', admin_note = COALESCE(admin_note, 'تم تحرير مقعد جهاز بواسطة الإدارة'), resolved_at = COALESCE(resolved_at, ${nowExpr})
+        WHERE user_id = ? AND status = 'pending'`,
+      [Number(userId)],
+      conn
+    );
+    return true;
+  });
+}
+
+async function adminResolveDeviceChangeRequest(requestId, { action, adminNote = '', removeDeviceId = null }) {
+  return withTx(async (conn) => {
+    const reqRow = await queryOne('SELECT * FROM device_change_requests WHERE id = ? LIMIT 1', [Number(requestId)], conn);
+    if (!reqRow) return null;
+
+    const userId = Number(reqRow.user_id);
+    const cleanNote = String(adminNote || '').trim().slice(0, 300) || null;
+    const isApprove = action === 'approve';
+    let removedDevice = false;
+
+    if (isApprove) {
+      if (removeDeviceId) {
+        const del = await execRun(
+          'DELETE FROM user_devices WHERE id = ? AND user_id = ?',
+          [Number(removeDeviceId), userId],
+          conn
+        );
+        if (del.changes === 1) {
+          removedDevice = true;
+          await execRun(
+            'UPDATE users SET active_stream_id = NULL, active_stream_device_id = NULL WHERE id = ? AND active_stream_device_id = ?',
+            [userId, Number(removeDeviceId)],
+            conn
+          );
+          await execRun('INSERT INTO device_changes (user_id) VALUES (?)', [userId], conn);
+        }
+      }
+
+      if (removedDevice) {
+        await execRun('UPDATE users SET approved_device_replace = 0 WHERE id = ?', [userId], conn);
+        await execRun(
+          `UPDATE device_change_requests SET status = 'used', admin_note = ?, resolved_at = ${nowExpr} WHERE id = ?`,
+          [cleanNote || 'تمت إزالة الجهاز القديم بواسطة الإدارة', Number(requestId)],
+          conn
+        );
+      } else {
+        await execRun('UPDATE users SET approved_device_replace = 1 WHERE id = ?', [userId], conn);
+        await execRun(
+          `UPDATE device_change_requests SET status = 'approved', admin_note = ?, resolved_at = ${nowExpr} WHERE id = ?`,
+          [cleanNote, Number(requestId)],
+          conn
+        );
+      }
+    } else {
+      await execRun('UPDATE users SET approved_device_replace = 0 WHERE id = ?', [userId], conn);
+      await execRun(
+        `UPDATE device_change_requests SET status = 'rejected', admin_note = ?, resolved_at = ${nowExpr} WHERE id = ?`,
+        [cleanNote, Number(requestId)],
+        conn
+      );
+    }
+
+    const userRow = await queryOne('SELECT id, email, full_name FROM users WHERE id = ?', [userId], conn);
+    return {
+      requestId: Number(requestId),
+      userId,
+      email: userRow?.email || null,
+      fullName: userRow?.full_name || null,
+      approved: isApprove,
+      removedDevice,
+      note: cleanNote,
+    };
+  });
+}
+
 async function adminForceLogoutEverywhere(userId) {
   await execRun('UPDATE users SET session_version = session_version + 1, active_stream_id = NULL WHERE id = ?', [Number(userId)]);
 }
@@ -1196,7 +1494,10 @@ module.exports = {
   touchDevice,
   countRecentDeviceChanges,
   registerDeviceAtomic,
+  verifyCodeAndRegisterDevice,
   removeDeviceWithQuota,
+  hasPendingDeviceChangeRequest,
+  createDeviceChangeRequest,
   consumeDpopJti,
   createEmailCode,
   verifyEmailCode,
@@ -1221,6 +1522,9 @@ module.exports = {
   adminLookupByWatermark,
   adminClearRisk,
   adminResetDeviceQuota,
+  adminSetDeviceReplaceApproval,
+  adminRemoveUserDevice,
+  adminResolveDeviceChangeRequest,
   adminForceLogoutEverywhere,
   adminSetBan,
   adminDeleteUser,
